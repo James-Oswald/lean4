@@ -40,32 +40,39 @@ structure InfoWithCtx where
   info : Elab.Info
   children : PersistentArray InfoTree
 
-/-- Visit nodes, passing in a surrounding context (the innermost one combined with all outer ones)
-and accumulating results on the way back up. -/
+/--
+Visit nodes, passing in a surrounding context (the innermost one combined with all outer ones) and
+accumulating results on the way back up. If `preNode` returns `false`, the children of the current
+node are skipped and `postNode` is invoked with an empty list of results.
+-/
 partial def InfoTree.visitM [Monad m]
-    (preNode  : ContextInfo → Info → (children : PersistentArray InfoTree) → m Unit := fun _ _ _ => pure ())
+    (preNode  : ContextInfo → Info → (children : PersistentArray InfoTree) → m Bool := fun _ _ _ => pure true)
     (postNode : ContextInfo → Info → (children : PersistentArray InfoTree) → List (Option α) → m α)
-    : InfoTree → m (Option α) :=
-  go none
+    (ctx? : Option ContextInfo := none) : InfoTree → m (Option α) :=
+  go ctx?
 where go
   | ctx?, context ctx t => go (ctx.mergeIntoOuter? ctx?) t
   | some ctx, node i cs => do
-    preNode ctx i cs
-    let as ← cs.toList.mapM (go <| i.updateContext? ctx)
-    postNode ctx i cs as
+    let visitChildren ← preNode ctx i cs
+    if !visitChildren then
+      postNode ctx i cs []
+    else
+      let as ← cs.toList.mapM (go <| i.updateContext? ctx)
+      postNode ctx i cs as
   | none, node .. => panic! "unexpected context-free info tree node"
   | _, hole .. => pure none
 
 /-- `InfoTree.visitM` specialized to `Unit` return type -/
 def InfoTree.visitM' [Monad m]
-    (preNode  : ContextInfo → Info → (children : PersistentArray InfoTree) → m Unit := fun _ _ _ => pure ())
+    (preNode  : ContextInfo → Info → (children : PersistentArray InfoTree) → m Bool := fun _ _ _ => pure true)
     (postNode : ContextInfo → Info → (children : PersistentArray InfoTree) → m Unit := fun _ _ _ => pure ())
-    (t : InfoTree) : m Unit := t.visitM preNode (fun ci i cs _ => postNode ci i cs) |> discard
+    (ctx? : Option ContextInfo := none) (t : InfoTree) : m Unit :=
+  t.visitM preNode (fun ci i cs _ => postNode ci i cs) ctx? |> discard
 
 /--
   Visit nodes bottom-up, passing in a surrounding context (the innermost one) and the union of nested results (empty at leaves). -/
 def InfoTree.collectNodesBottomUp (p : ContextInfo → Info → PersistentArray InfoTree → List α → List α) (i : InfoTree) : List α :=
-  i.visitM (m := Id) (postNode := fun ci i cs as => p ci i cs (as.filterMap id).join) |>.getD []
+  i.visitM (m := Id) (postNode := fun ci i cs as => p ci i cs (as.filterMap id).flatten) |>.getD []
 
 /--
   For every branch of the `InfoTree`, find the deepest node in that branch for which `p` returns
@@ -197,7 +204,7 @@ def InfoTree.smallestInfo? (p : Info → Bool) (t : InfoTree) : Option (ContextI
 /-- Find an info node, if any, which should be shown on hover/cursor at position `hoverPos`. -/
 partial def InfoTree.hoverableInfoAt? (t : InfoTree) (hoverPos : String.Pos) (includeStop := false) (omitAppFns := false) (omitIdentApps := false) : Option InfoWithCtx := Id.run do
   let results := t.visitM (m := Id) (postNode := fun ctx info children results => do
-    let mut results := results.bind (·.getD [])
+    let mut results := results.flatMap (·.getD [])
     if omitAppFns && info.stx.isOfKind ``Parser.Term.app && info.stx[0].isIdent then
         results := results.filter (·.2.info.stx != info.stx[0])
     if omitIdentApps && info.stx.isIdent then
@@ -410,6 +417,9 @@ where go ci?
     match ci?, i with
     | some ci, .ofTermInfo ti
     | some ci, .ofOmissionInfo { toTermInfo := ti, .. } => do
+      -- NOTE: `instantiateMVars` can potentially be expensive but we rely on the elaborator
+      -- creating a fully instantiated `MutualDef.body` term info node which has the implicit effect
+      -- of making the `instantiateMVars` here a no-op and avoids further recursing into the body
       let expr ← ti.runMetaM ci (instantiateMVars ti.expr)
       return expr.hasSorry
       -- we assume that `cs` are subterms of `ti.expr` and

@@ -7,7 +7,7 @@ prelude
 import Init.WFTactics
 import Init.Data.Nat.Basic
 import Init.Data.Fin.Basic
-import Init.Data.UInt.Basic
+import Init.Data.UInt.BasicAux
 import Init.Data.Repr
 import Init.Data.ToString.Basic
 import Init.GetElem
@@ -24,6 +24,8 @@ macro_rules
 variable {α : Type u}
 
 namespace Array
+
+@[deprecated size (since := "2024-10-13")] abbrev data := @toList
 
 /-! ### Preliminary theorems -/
 
@@ -216,7 +218,7 @@ def swapAt! (a : Array α) (i : Nat) (v : α) : α × Array α :=
   if h : i < a.size then
     swapAt a ⟨i, h⟩ v
   else
-    have : Inhabited α := ⟨v⟩
+    have : Inhabited (α × Array α) := ⟨(v, a)⟩
     panic! ("index " ++ toString i ++ " out of bounds")
 
 def shrink (a : Array α) (n : Nat) : Array α :=
@@ -607,12 +609,16 @@ protected def appendList (as : Array α) (bs : List α) : Array α :=
 instance : HAppend (Array α) (List α) (Array α) := ⟨Array.appendList⟩
 
 @[inline]
-def concatMapM [Monad m] (f : α → m (Array β)) (as : Array α) : m (Array β) :=
+def flatMapM [Monad m] (f : α → m (Array β)) (as : Array α) : m (Array β) :=
   as.foldlM (init := empty) fun bs a => do return bs ++ (← f a)
 
+@[deprecated concatMapM (since := "2024-10-16")] abbrev concatMapM := @flatMapM
+
 @[inline]
-def concatMap (f : α → Array β) (as : Array α) : Array β :=
+def flatMap (f : α → Array β) (as : Array α) : Array β :=
   as.foldl (init := empty) fun bs a => bs ++ f a
+
+@[deprecated flatMap (since := "2024-10-16")] abbrev concatMap := @flatMap
 
 /-- Joins array of array into a single array.
 
@@ -813,8 +819,14 @@ def split (as : Array α) (p : α → Bool) : Array α × Array α :=
 
 /-! ## Auxiliary functions used in metaprogramming.
 
-We do not intend to provide verification theorems for these functions.
+We do not currently intend to provide verification theorems for these functions.
 -/
+
+/- ### reduceOption -/
+
+/-- Drop `none`s from a Array, and replace each remaining `some a` with `a`. -/
+@[inline] def reduceOption (as : Array (Option α)) : Array α :=
+  as.filterMap id
 
 /-! ### eraseReps -/
 
